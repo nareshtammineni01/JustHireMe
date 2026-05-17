@@ -312,6 +312,98 @@ def test_graph_profile_delete_education_accepts_title_path_and_updates_snapshot(
     assert saved["education"] == ["MSc"]
 
 
+def test_graph_profile_delete_skill_accepts_name_when_id_is_missing(monkeypatch):
+    from data.graph import profile as graph_profile
+
+    saved = {}
+    graph_deletes = []
+    deleted_vec_ids = []
+
+    monkeypatch.setattr(graph_profile, "_query_rows", lambda query, _params=None: [["skill-1", "FastAPI"]] if "Skill" in query else [])
+    monkeypatch.setattr(graph_profile, "_safe_execute", lambda query, params=None: graph_deletes.append((query, params)))
+    monkeypatch.setattr(graph_profile, "delete_vec_rows", lambda _table, ids: deleted_vec_ids.extend(ids))
+    monkeypatch.setattr(graph_profile, "delete_vec_id_from_all", lambda row_id: deleted_vec_ids.append(row_id))
+    monkeypatch.setattr(graph_profile, "_refresh_after_write", lambda _db_path=None: None)
+    monkeypatch.setattr(
+        graph_profile,
+        "load_profile_snapshot",
+        lambda _db_path=None: {
+            "n": "Jane",
+            "s": "",
+            "skills": [{"n": "FastAPI", "cat": "backend"}, {"id": "react", "n": "React", "cat": "frontend"}],
+            "projects": [],
+            "exp": [],
+        },
+    )
+    monkeypatch.setattr(graph_profile, "save_profile_snapshot", lambda profile, _db_path=None, **_kwargs: saved.update(profile))
+
+    graph_profile.delete_skill("FastAPI")
+
+    assert any(params == {"id": "skill-1"} for _query, params in graph_deletes)
+    assert "skill-1" in deleted_vec_ids
+    assert [item["n"] for item in saved["skills"]] == ["React"]
+
+
+def test_graph_profile_delete_project_accepts_title_when_id_is_missing(monkeypatch):
+    from data.graph import profile as graph_profile
+
+    saved = {}
+    graph_deletes = []
+
+    monkeypatch.setattr(graph_profile, "_query_rows", lambda query, _params=None: [["proj-1", "Hiring Agent"]] if "Project" in query else [])
+    monkeypatch.setattr(graph_profile, "_safe_execute", lambda query, params=None: graph_deletes.append((query, params)))
+    monkeypatch.setattr(graph_profile, "delete_vec_rows", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(graph_profile, "delete_vec_id_from_all", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(graph_profile, "_refresh_after_write", lambda _db_path=None: None)
+    monkeypatch.setattr(
+        graph_profile,
+        "load_profile_snapshot",
+        lambda _db_path=None: {
+            "n": "Jane",
+            "s": "",
+            "skills": [],
+            "projects": [{"title": "Hiring Agent"}, {"id": "p2", "title": "Ops Console"}],
+            "exp": [],
+        },
+    )
+    monkeypatch.setattr(graph_profile, "save_profile_snapshot", lambda profile, _db_path=None, **_kwargs: saved.update(profile))
+
+    graph_profile.delete_project("Hiring Agent")
+
+    assert any(params == {"id": "proj-1"} for _query, params in graph_deletes)
+    assert [item["title"] for item in saved["projects"]] == ["Ops Console"]
+
+
+def test_graph_profile_delete_experience_accepts_role_company_label_when_id_is_missing(monkeypatch):
+    from data.graph import profile as graph_profile
+
+    saved = {}
+    graph_deletes = []
+
+    monkeypatch.setattr(graph_profile, "_query_rows", lambda query, _params=None: [["exp-1", "Engineer", "Acme"]] if "Experience" in query else [])
+    monkeypatch.setattr(graph_profile, "_safe_execute", lambda query, params=None: graph_deletes.append((query, params)))
+    monkeypatch.setattr(graph_profile, "delete_vec_rows", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(graph_profile, "delete_vec_id_from_all", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(graph_profile, "_refresh_after_write", lambda _db_path=None: None)
+    monkeypatch.setattr(
+        graph_profile,
+        "load_profile_snapshot",
+        lambda _db_path=None: {
+            "n": "Jane",
+            "s": "",
+            "skills": [],
+            "projects": [],
+            "exp": [{"role": "Engineer", "co": "Acme"}, {"id": "exp-2", "role": "Designer", "co": "Beta"}],
+        },
+    )
+    monkeypatch.setattr(graph_profile, "save_profile_snapshot", lambda profile, _db_path=None, **_kwargs: saved.update(profile))
+
+    graph_profile.delete_experience("Engineer at Acme")
+
+    assert any(params == {"id": "exp-1"} for _query, params in graph_deletes)
+    assert [item["role"] for item in saved["exp"]] == ["Designer"]
+
+
 def test_graph_profile_delete_last_text_entry_allows_empty_snapshot(monkeypatch):
     from data.graph import profile as graph_profile
 

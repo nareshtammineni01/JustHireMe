@@ -264,14 +264,14 @@ class TestScoringEngineCaps(unittest.TestCase):
             self.assertGreaterEqual(result.score, 0)
             self.assertLessEqual(result.score, 100)
 
-    def test_semantic_unavailable_is_visible_fallback(self):
+    def test_local_semantic_fallback_is_used_when_vector_store_is_empty(self):
         result = self._score(
             "Junior Frontend Developer - React, TypeScript",
             self._profile(0),
         )
         self.assertTrue(
-            any("Semantic matching unavailable" in gap for gap in result.gaps),
-            "Fallback scoring should make unavailable semantic matching visible",
+            any("Semantic fit" in point and "local-profile" in point for point in result.match_points),
+            "Fallback semantic matching should still be visible in the score evidence",
         )
 
 class TestLeadQualityGate(unittest.TestCase):

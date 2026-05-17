@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Icon from "../../shared/components/Icon";
 import type { ApiFetch, View } from "../../types";
-import { entryTitle, normalizeProfileResponse, profileDeletePath } from "./profileUtils";
+import { entryTitle, normalizeProfileResponse, profileDeleteKey, profileDeletePath } from "./profileUtils";
 
 const stackItems = (stack: any): string[] =>
   (Array.isArray(stack) ? stack : String(stack || "").split(","))
@@ -19,6 +19,7 @@ export function ProfileView({ api, setView }: { api: ApiFetch; setView: (v: View
   const [identityForm, setIdentityForm] = useState({ email: "", phone: "", linkedin_url: "", github_url: "", website_url: "", city: "" });
   const [activeProfileTab, setActiveProfileTab] = useState<"skills" | "experience" | "projects" | "education" | "certifications" | "achievements">("skills");
   const [expandedProfileList, setExpandedProfileList] = useState(false);
+  const [deletingItems, setDeletingItems] = useState<Set<string>>(new Set());
 
   const fetchProfile = useCallback(async (options?: { errorPrefix?: string }) => {
     try {
@@ -59,7 +60,9 @@ export function ProfileView({ api, setView }: { api: ApiFetch; setView: (v: View
   }, [profile]);
 
   const deleteItem = async (type: string, id: string) => {
-    if (!window.confirm("Delete this item?")) return;
+    const key = `${type}:${id}`;
+    if (!id || deletingItems.has(key)) return;
+    setDeletingItems(prev => new Set(prev).add(key));
     try {
       const res = await api(profileDeletePath(type, id), { method: "DELETE" });
       const body = await res.json().catch(() => ({}));
@@ -72,6 +75,11 @@ export function ProfileView({ api, setView }: { api: ApiFetch; setView: (v: View
     await fetchProfile();
     window.dispatchEvent(new CustomEvent("profile-refresh"));
     window.dispatchEvent(new CustomEvent("graph-refresh"));
+    setDeletingItems(prev => {
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
   };
 
   const saveEdit = async (type: string, id: string) => {
@@ -330,13 +338,9 @@ export function ProfileView({ api, setView }: { api: ApiFetch; setView: (v: View
                           </div>
                           <div className="profile-list-trailing">
                             <span className="profile-count-badge">{s.count}</span>
-                            {s.id ? (
-                              <button className="profile-row-action" onClick={() => deleteItem("skill", s.id)} title="Delete skill">
-                                <Icon name="trash" size={14} />
-                              </button>
-                            ) : (
-                              <Icon name="arrow-right" size={14} />
-                            )}
+                            <button className="profile-row-action" onClick={() => deleteItem("skill", s.id || s.label)} disabled={deletingItems.has(`skill:${s.id || s.label}`)} title="Delete skill">
+                              <Icon name="trash" size={14} />
+                            </button>
                           </div>
                         </div>
                       );
@@ -374,7 +378,7 @@ export function ProfileView({ api, setView }: { api: ApiFetch; setView: (v: View
                               <div className="row gap-2">
                                 <span className="profile-count-badge">{idx + 1}</span>
                                 <button className="btn-icon profile-mini-action" onClick={() => { setEditId(e.id); setEditData({ ...e }); }}><Icon name="edit" size={14} /></button>
-                                <button className="btn-icon profile-mini-action profile-danger" onClick={() => deleteItem("experience", e.id)}><Icon name="trash" size={14} /></button>
+                                <button className="btn-icon profile-mini-action profile-danger" onClick={() => deleteItem("experience", profileDeleteKey(e))} disabled={deletingItems.has(`experience:${profileDeleteKey(e)}`)}><Icon name="trash" size={14} /></button>
                               </div>
                             </div>
                             {e.d && <div style={{ fontSize: 13.5, color: "var(--ink-2)", lineHeight: 1.6, marginTop: 10, whiteSpace: "pre-wrap" }}>{e.d}</div>}
@@ -408,7 +412,7 @@ export function ProfileView({ api, setView }: { api: ApiFetch; setView: (v: View
                               <div className="row gap-2">
                                 <span className="profile-count-badge">{idx + 1}</span>
                                 <button className="btn-icon profile-mini-action" onClick={() => { setEditId(p.id); setEditData({ ...p, stack: stackItems(p.stack).join(", ") }); }}><Icon name="edit" size={14} /></button>
-                                <button className="btn-icon profile-mini-action profile-danger" onClick={() => deleteItem("project", p.id)}><Icon name="trash" size={14} /></button>
+                                <button className="btn-icon profile-mini-action profile-danger" onClick={() => deleteItem("project", profileDeleteKey(p))} disabled={deletingItems.has(`project:${profileDeleteKey(p)}`)}><Icon name="trash" size={14} /></button>
                               </div>
                             </div>
                             <div className="row gap-1" style={{ flexWrap: "wrap", margin: "8px 0 10px" }}>
@@ -435,7 +439,7 @@ export function ProfileView({ api, setView }: { api: ApiFetch; setView: (v: View
                         </div>
                         <div className="profile-list-trailing">
                           <span className="profile-count-badge">{idx + 1}</span>
-                          <button className="profile-row-action" onClick={() => deleteItem("education", entryTitle(item))} title="Delete education">
+                          <button className="profile-row-action" onClick={() => deleteItem("education", profileDeleteKey(item))} disabled={deletingItems.has(`education:${profileDeleteKey(item)}`)} title="Delete education">
                             <Icon name="trash" size={14} />
                           </button>
                         </div>
@@ -454,7 +458,7 @@ export function ProfileView({ api, setView }: { api: ApiFetch; setView: (v: View
                         </div>
                         <div className="profile-list-trailing">
                           <span className="profile-count-badge">{idx + 1}</span>
-                          <button className="profile-row-action" onClick={() => deleteItem("certification", entryTitle(item))} title="Delete certification">
+                          <button className="profile-row-action" onClick={() => deleteItem("certification", profileDeleteKey(item))} disabled={deletingItems.has(`certification:${profileDeleteKey(item)}`)} title="Delete certification">
                             <Icon name="trash" size={14} />
                           </button>
                         </div>
@@ -473,7 +477,7 @@ export function ProfileView({ api, setView }: { api: ApiFetch; setView: (v: View
                         </div>
                         <div className="profile-list-trailing">
                           <span className="profile-count-badge">{idx + 1}</span>
-                          <button className="profile-row-action" onClick={() => deleteItem("achievement", entryTitle(item))} title="Delete achievement">
+                          <button className="profile-row-action" onClick={() => deleteItem("achievement", profileDeleteKey(item))} disabled={deletingItems.has(`achievement:${profileDeleteKey(item)}`)} title="Delete achievement">
                             <Icon name="trash" size={14} />
                           </button>
                         </div>

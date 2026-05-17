@@ -5,7 +5,22 @@ export type ProfileTextType = "education" | "certification" | "achievement";
 const asArray = (value: unknown): any[] => Array.isArray(value) ? value : [];
 
 export const entryTitle = (item: unknown): string =>
-  typeof item === "string" ? item : String((item as any)?.title || "");
+  typeof item === "string"
+    ? item
+    : String(
+        (item as any)?.title
+        || (item as any)?.name
+        || (item as any)?.n
+        || [(item as any)?.role, (item as any)?.co].filter(Boolean).join(" at ")
+        || (item as any)?.id
+        || "",
+      );
+
+export const profileDeleteKey = (item: unknown): string => {
+  if (typeof item === "string") return item;
+  const source = item && typeof item === "object" ? item as Record<string, any> : {};
+  return String(source.id || entryTitle(source));
+};
 
 export function normalizeProfileResponse(data: unknown) {
   const source = data && typeof data === "object" ? data as Record<string, any> : {};

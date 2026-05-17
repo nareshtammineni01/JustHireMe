@@ -629,12 +629,28 @@ def update_skill(skill_id: str, name: str, category: str, db_path: str | None = 
 
 
 def delete_skill(skill_id: str, db_path: str | None = None) -> None:
-    delete_vec_rows("skills", [skill_id])
-    delete_vec_id_from_all(skill_id)
-    _safe_execute("MATCH (s:Skill) WHERE s.id = $id DETACH DELETE s", {"id": skill_id})
+    value = unquote(str(skill_id or "")).strip()
+    delete_ids = _skill_delete_ids(value)
+    delete_vec_rows("skills", delete_ids)
+    for node_id in delete_ids:
+        delete_vec_id_from_all(node_id)
+        _safe_execute("MATCH (s:Skill) WHERE s.id = $id DETACH DELETE s", {"id": node_id})
     _refresh_after_write(db_path)
     snapshot = normal_profile(load_profile_snapshot(db_path))
-    snapshot["skills"] = [item for item in snapshot.get("skills", []) if not (isinstance(item, dict) and str(item.get("id") or "") == str(skill_id))]
+    delete_id_set = set(delete_ids)
+    delete_key = _norm_key(value)
+    snapshot["skills"] = [
+        item
+        for item in snapshot.get("skills", [])
+        if not (
+            isinstance(item, dict)
+            and (
+                str(item.get("id") or "") in delete_id_set
+                or hash_id(str(item.get("n") or "").strip()) in delete_id_set
+                or _norm_key(item.get("n")) == delete_key
+            )
+        )
+    ]
     save_profile_snapshot(snapshot, db_path, allow_empty=True)
 
 
@@ -693,13 +709,29 @@ def update_experience(experience_id: str, role: str, company: str, period: str, 
 
 
 def delete_experience(experience_id: str, db_path: str | None = None) -> None:
+    value = unquote(str(experience_id or "")).strip()
+    delete_ids = _experience_delete_ids(value)
     _refresh_after_write(db_path)
-    delete_vec_rows("experiences", [experience_id])
-    delete_vec_id_from_all(experience_id)
-    _safe_execute("MATCH (e:Experience) WHERE e.id = $id DETACH DELETE e", {"id": experience_id})
+    delete_vec_rows("experiences", delete_ids)
+    for node_id in delete_ids:
+        delete_vec_id_from_all(node_id)
+        _safe_execute("MATCH (e:Experience) WHERE e.id = $id DETACH DELETE e", {"id": node_id})
     _refresh_after_write(db_path)
     snapshot = normal_profile(load_profile_snapshot(db_path))
-    snapshot["exp"] = [item for item in snapshot.get("exp", []) if not (isinstance(item, dict) and str(item.get("id") or "") == str(experience_id))]
+    delete_id_set = set(delete_ids)
+    delete_key = _norm_key(value)
+    snapshot["exp"] = [
+        item
+        for item in snapshot.get("exp", [])
+        if not (
+            isinstance(item, dict)
+            and (
+                str(item.get("id") or "") in delete_id_set
+                or hash_id(str(item.get("role") or "") + str(item.get("co") or "")) in delete_id_set
+                or _norm_key(" at ".join(part for part in [item.get("role"), item.get("co")] if part)) == delete_key
+            )
+        )
+    ]
     save_profile_snapshot(snapshot, db_path, allow_empty=True)
 
 
@@ -758,12 +790,28 @@ def update_project(project_id: str, title: str, stack: str, repo: str, impact: s
 
 
 def delete_project(project_id: str, db_path: str | None = None) -> None:
-    delete_vec_rows("projects", [project_id])
-    delete_vec_id_from_all(project_id)
-    _safe_execute("MATCH (p:Project) WHERE p.id = $id DETACH DELETE p", {"id": project_id})
+    value = unquote(str(project_id or "")).strip()
+    delete_ids = _project_delete_ids(value)
+    delete_vec_rows("projects", delete_ids)
+    for node_id in delete_ids:
+        delete_vec_id_from_all(node_id)
+        _safe_execute("MATCH (p:Project) WHERE p.id = $id DETACH DELETE p", {"id": node_id})
     _refresh_after_write(db_path)
     snapshot = normal_profile(load_profile_snapshot(db_path))
-    snapshot["projects"] = [item for item in snapshot.get("projects", []) if not (isinstance(item, dict) and str(item.get("id") or "") == str(project_id))]
+    delete_id_set = set(delete_ids)
+    delete_key = _norm_key(value)
+    snapshot["projects"] = [
+        item
+        for item in snapshot.get("projects", [])
+        if not (
+            isinstance(item, dict)
+            and (
+                str(item.get("id") or "") in delete_id_set
+                or hash_id(str(item.get("title") or "").strip()) in delete_id_set
+                or _norm_key(item.get("title")) == delete_key
+            )
+        )
+    ]
     save_profile_snapshot(snapshot, db_path, allow_empty=True)
 
 
@@ -799,6 +847,66 @@ def _entry_text(value) -> str:
 
 def _entry_key(value) -> str:
     return re.sub(r"\s+", " ", _entry_text(value)).strip().lower()
+
+
+def _norm_key(value) -> str:
+    return re.sub(r"[^a-z0-9]+", "", unquote(str(value or "")).strip().lower())
+
+
+def _dedupe_ids(ids: Iterable[str]) -> list[str]:
+    return list(dict.fromkeys(str(item or "").strip() for item in ids if str(item or "").strip()))
+
+
+def _skill_delete_ids(skill_id_or_name: str) -> list[str]:
+    value = unquote(str(skill_id_or_name or "")).strip()
+    if not value:
+        return []
+    ids = [value, hash_id(value)]
+    wanted_key = _norm_key(value)
+    for row in _query_rows("MATCH (s:Skill) RETURN s.id, s.n"):
+        node_id = str(row[0] or "").strip()
+        name = str(row[1] or "").strip()
+        if node_id in ids or _norm_key(name) == wanted_key or _norm_key(node_id) == wanted_key:
+            ids.append(node_id)
+    return _dedupe_ids(ids)
+
+
+def _project_delete_ids(project_id_or_title: str) -> list[str]:
+    value = unquote(str(project_id_or_title or "")).strip()
+    if not value:
+        return []
+    ids = [value, hash_id(value)]
+    wanted_key = _norm_key(value)
+    for row in _query_rows("MATCH (p:Project) RETURN p.id, p.title"):
+        node_id = str(row[0] or "").strip()
+        title = str(row[1] or "").strip()
+        if node_id in ids or _norm_key(title) == wanted_key or _norm_key(node_id) == wanted_key:
+            ids.append(node_id)
+    return _dedupe_ids(ids)
+
+
+def _experience_delete_ids(experience_id_or_label: str) -> list[str]:
+    value = unquote(str(experience_id_or_label or "")).strip()
+    if not value:
+        return []
+    ids = [value, hash_id(value)]
+    wanted_key = _norm_key(value)
+    for row in _query_rows("MATCH (e:Experience) RETURN e.id, e.role, e.co"):
+        node_id = str(row[0] or "").strip()
+        role = str(row[1] or "").strip()
+        company = str(row[2] or "").strip()
+        labels = [
+            node_id,
+            role,
+            company,
+            role + company,
+            " at ".join(part for part in [role, company] if part),
+            " - ".join(part for part in [role, company] if part),
+        ]
+        if node_id in ids or hash_id(role + company) in ids or any(_norm_key(label) == wanted_key for label in labels):
+            ids.append(node_id)
+            ids.append(hash_id(role + company))
+    return _dedupe_ids(ids)
 
 
 def _text_node_ids(label: str, entry: str) -> list[str]:

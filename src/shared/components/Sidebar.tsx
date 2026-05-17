@@ -1,6 +1,7 @@
 import { useState } from "react";
 import Icon from "./Icon";
 import type { View } from "../../types";
+import { useAppVersion } from "../hooks/useAppVersion";
 
 const NAV = [
   { id: "dashboard", label: "Dashboard", icon: "home", tone: "blue" },
@@ -42,6 +43,7 @@ export function Sidebar({
 }) {
   const [pipelineOpen, setPipelineOpen] = useState(true);
   const pipelineActive = isPipelineView(view);
+  const appVersion = useAppVersion();
 
   return (
     <aside className={"sidebar " + (collapsed ? "collapsed" : "")}>
@@ -50,7 +52,7 @@ export function Sidebar({
           <Icon name="logo" size={32} />
           <div className="col sidebar-label" style={{ lineHeight: 1.1 }}>
             <div style={{ fontSize: 15, fontWeight: 600, letterSpacing: "-0.02em" }}>JustHireMe</div>
-            <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-3)", letterSpacing: "0.14em", textTransform: "uppercase" }}>v0.1-alpha</div>
+            <div className="mono app-version-label">v{appVersion}</div>
           </div>
         </div>
         <button

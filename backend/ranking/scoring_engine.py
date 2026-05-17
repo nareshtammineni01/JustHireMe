@@ -602,18 +602,37 @@ def _semantic_criterion(jd: str, candidate_data: dict, weight: int) -> Criterion
     score = int(result.get("score", 0))
     skill_matches = result.get("skill_matches") or []
     project_matches = result.get("project_matches") or []
+    experience_matches = result.get("experience_matches") or []
+    credential_matches = result.get("credential_matches") or []
+    profile_matches = result.get("profile_matches") or []
     parts: list[str] = []
     if project_matches:
         parts.append(
             "projects: "
             + ", ".join(f"{name} ({sim:.2f})" for name, sim in project_matches[:2])
         )
+    if experience_matches:
+        parts.append(
+            "experience: "
+            + ", ".join(f"{name} ({sim:.2f})" for name, sim in experience_matches[:2])
+        )
     if skill_matches:
         parts.append(
             "skills: "
             + ", ".join(f"{name} ({sim:.2f})" for name, sim in skill_matches[:3])
         )
-    reason = "embedding similarity vs current profile vectors"
+    if credential_matches:
+        parts.append(
+            "credentials: "
+            + ", ".join(f"{name} ({sim:.2f})" for name, sim in credential_matches[:2])
+        )
+    if profile_matches:
+        parts.append(
+            "profile: "
+            + ", ".join(f"{name} ({sim:.2f})" for name, sim in profile_matches[:1])
+        )
+    source = result.get("source") or (result.get("raw") or {}).get("source") or "semantic"
+    reason = f"embedding similarity vs current profile ({source})"
     if parts:
         reason += " - " + "; ".join(parts)
     return CriterionScore("Semantic fit", score, weight, reason)

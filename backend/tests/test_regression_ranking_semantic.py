@@ -123,11 +123,15 @@ class RegressionTests(unittest.TestCase):
             "seniority cap should prevent this")
         self.assertTrue(any("seniority cap" in gap for gap in senior_react["gaps"]))
 
-    def test_semantic_skips_embedding_when_vector_tables_are_missing(self):
+    def test_semantic_falls_back_to_local_profile_when_vector_tables_are_missing(self):
         from ranking import semantic
 
         with mock.patch.object(semantic, "_embed_jd", side_effect=AssertionError("embedding should not load")):
-            self.assertIsNone(semantic.semantic_fit("Need Python RAG engineer", candidate_data=_sample_scoring_profile()))
+            result = semantic.semantic_fit("Need Python RAG engineer", candidate_data=_sample_scoring_profile())
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["source"], "local-profile")
+        self.assertTrue(result["project_matches"])
 
     def test_semantic_search_is_scoped_to_current_profile_vectors(self):
         from ranking import semantic
@@ -154,6 +158,30 @@ class RegressionTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual([name for name, _sim in result["skill_matches"]], ["FastAPI"])
         self.assertEqual([name for name, _sim in result["project_matches"]], ["Waldo"])
+
+    def test_semantic_local_fallback_uses_experience_and_credentials(self):
+        from ranking import semantic
+
+        profile = {
+            "skills": [],
+            "projects": [],
+            "exp": [{
+                "role": "Data Engineer",
+                "co": "Acme",
+                "period": "2025",
+                "d": "Built Airflow pipelines for warehouse automation.",
+            }],
+            "certifications": ["AWS Data Analytics Specialty"],
+        }
+
+        with mock.patch.object(semantic, "_vec_store", return_value=_FakeSemanticStore({})), \
+             mock.patch.object(semantic, "_embed_jd", side_effect=AssertionError("embedding should not load")):
+            result = semantic.semantic_fit("Need AWS data engineer for Airflow pipelines", candidate_data=profile)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["source"], "local-profile")
+        self.assertTrue(result["experience_matches"])
+        self.assertTrue(result["credential_matches"])
 
     def test_evaluator_passes_current_profile_into_semantic_signal(self):
         from ranking.evaluator import score

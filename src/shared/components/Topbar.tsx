@@ -1,7 +1,9 @@
 import Icon from "./Icon";
 import type { View } from "../../types";
+import { useAppVersion } from "../hooks/useAppVersion";
 
 export function Topbar({ view }: { view: View }) {
+  const appVersion = useAppVersion();
   const titles: Record<View, string> = {
     apply:     "Customize One Job",
     dashboard: "Command Center",
@@ -43,6 +45,7 @@ export function Topbar({ view }: { view: View }) {
           <Icon name="download" size={13} /> Export Graph
         </button>
       )}
+      <div className="topbar-version mono" title={`JustHireMe version ${appVersion}`}>v{appVersion}</div>
     </header>
   );
 }

@@ -20,6 +20,12 @@ function staticChecks() {
       fail(`NSIS preinstall hook is missing ${required}`);
     }
   }
+  const tauriConfigPath = join(repoRoot, "src-tauri", "tauri.conf.json");
+  const tauriConfig = JSON.parse(readFileSync(tauriConfigPath, "utf8"));
+  const installMode = tauriConfig.plugins?.updater?.windows?.installMode;
+  if (installMode !== "quiet") {
+    fail(`Windows updater installMode must stay quiet; found ${installMode || "missing"}.`);
+  }
   console.log("Windows update static smoke passed.");
   console.log("Set JHM_WINDOWS_UPDATE_SMOKE=1 with JHM_OLD_INSTALLER and JHM_NEW_INSTALLER for installer-over-existing smoke.");
 }

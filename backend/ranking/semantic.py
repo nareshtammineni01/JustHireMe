@@ -8,13 +8,15 @@ evaluator, so stale vector rows cannot win just because they are close to the JD
 The result is exposed as a 0-100 ``Semantic fit`` signal that the deterministic
 scoring engine blends with its keyword-based criteria.
 
-Everything here is wrapped to fail soft - if the embedding model isn't
-available, or LanceDB is the in-memory ``_NullVectorStore`` (used in tests),
-``semantic_fit`` returns ``None`` and callers fall back to keyword scoring.
+Everything here is wrapped to fail soft. When LanceDB or the transformer model
+is unavailable, ``semantic_fit`` falls back to an in-process hashed embedding
+over the current profile payload, so matching still has a semantic signal before
+the vector store is warmed.
 """
 from __future__ import annotations
 
 import hashlib
+import math
 from typing import Optional
 from core.logging import get_logger
 
@@ -96,7 +98,33 @@ def _profile_scope(candidate_data: dict | None) -> dict[str, set[str]] | None:
         elif title:
             project_ids.add(_h(title))
 
-    return {"skills": skill_ids, "projects": project_ids}
+    experience_ids: set[str] = set()
+    for exp in candidate_data.get("exp", []) or []:
+        eid = str(exp.get("id") or "").strip()
+        role = str(exp.get("role") or "").strip()
+        company = str(exp.get("co") or "").strip()
+        if eid:
+            experience_ids.add(eid)
+        elif role or company:
+            experience_ids.add(_h(role + company))
+
+    credential_ids: set[str] = set()
+    for key in ("education", "certifications", "certs", "achievements", "awards"):
+        for item in candidate_data.get(key, []) or []:
+            title = _entry_title(item)
+            if title:
+                credential_ids.add(_h(title))
+
+    return {
+        "skills": skill_ids,
+        "projects": project_ids,
+        "experiences": experience_ids,
+        "credentials": credential_ids,
+    }
+
+
+def _scope_has_ids(scope: dict[str, set[str]] | None) -> bool:
+    return scope is None or any(scope.get(key) for key in ("skills", "projects", "experiences", "credentials"))
 
 
 def _ids_where_clause(ids: set[str]) -> str:
@@ -157,7 +185,7 @@ def _table_search(
 
 
 def _row_label(row: dict, fallback: str) -> str:
-    for key in ("title", "n", "id"):
+    for key in ("label", "title", "n", "role", "id"):
         v = row.get(key)
         if v:
             return str(v)
@@ -186,6 +214,193 @@ def _row_similarity(row: dict) -> float:
     return sim
 
 
+def _stack_text(value) -> str:
+    if isinstance(value, list):
+        return ", ".join(str(item).strip() for item in value if str(item).strip())
+    return str(value or "").strip()
+
+
+def _entry_title(value) -> str:
+    if isinstance(value, dict):
+        return str(value.get("title") or value.get("name") or value.get("n") or "").strip()
+    return str(value or "").strip()
+
+
+def _local_profile_rows(candidate_data: dict | None) -> list[dict]:
+    if not isinstance(candidate_data, dict):
+        return []
+
+    rows: list[dict] = []
+    summary_parts = [
+        str(candidate_data.get("n") or "").strip(),
+        str(candidate_data.get("s") or "").strip(),
+        str(candidate_data.get("desired_position") or "").strip(),
+    ]
+    summary = "\n".join(part for part in summary_parts if part)
+    if summary:
+        rows.append({
+            "kind": "profile",
+            "id": "profile:local",
+            "label": "Profile summary",
+            "text": f"Candidate profile\n{summary}",
+        })
+
+    for skill in candidate_data.get("skills", []) or []:
+        if isinstance(skill, dict):
+            name = str(skill.get("n") or skill.get("name") or "").strip()
+            category = str(skill.get("cat") or skill.get("category") or "general").strip() or "general"
+            row_id = str(skill.get("id") or "").strip() or _h(name)
+        else:
+            name = str(skill or "").strip()
+            category = "general"
+            row_id = _h(name)
+        if name:
+            rows.append({
+                "kind": "skill",
+                "id": row_id,
+                "label": name,
+                "text": f"Skill: {name}\nCategory: {category}",
+            })
+
+    for project in candidate_data.get("projects", []) or []:
+        if not isinstance(project, dict):
+            continue
+        title = str(project.get("title") or project.get("name") or "").strip()
+        stack = _stack_text(project.get("stack") or project.get("s"))
+        impact = str(project.get("impact") or project.get("description") or "").strip()
+        row_id = str(project.get("id") or "").strip() or _h(title)
+        text = f"Project: {title}\nStack: {stack}\nImpact: {impact}".strip()
+        if title or stack or impact:
+            rows.append({"kind": "project", "id": row_id, "label": title or "Project", "text": text})
+
+    for exp in candidate_data.get("exp", []) or []:
+        if not isinstance(exp, dict):
+            continue
+        role = str(exp.get("role") or "").strip()
+        company = str(exp.get("co") or exp.get("company") or "").strip()
+        period = str(exp.get("period") or "").strip()
+        stack = _stack_text(exp.get("s") or exp.get("stack"))
+        desc = str(exp.get("d") or exp.get("description") or "").strip()
+        label = " at ".join(part for part in [role, company] if part) or "Experience"
+        row_id = str(exp.get("id") or "").strip() or _h(role + company)
+        text = f"Experience: {role}\nCompany: {company}\nPeriod: {period}\nStack: {stack}\nDescription: {desc}".strip()
+        if role or company or desc or stack:
+            rows.append({"kind": "experience", "id": row_id, "label": label, "text": text})
+
+    for key, kind in (
+        ("education", "credential"),
+        ("certifications", "credential"),
+        ("certs", "credential"),
+        ("achievements", "credential"),
+        ("awards", "credential"),
+    ):
+        for item in candidate_data.get(key, []) or []:
+            title = _entry_title(item)
+            if title:
+                rows.append({
+                    "kind": kind,
+                    "id": _h(title),
+                    "label": title,
+                    "text": f"{key}: {title}",
+                })
+    return rows
+
+
+def _hash_embedding(text: str) -> list[float] | None:
+    try:
+        from data.vector.embeddings import hash_embedding
+        return [float(x) for x in hash_embedding(text)]
+    except Exception:
+        return None
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    if not a or not b:
+        return 0.0
+    size = min(len(a), len(b))
+    dot = sum(a[i] * b[i] for i in range(size))
+    na = math.sqrt(sum(a[i] * a[i] for i in range(size))) or 1.0
+    nb = math.sqrt(sum(b[i] * b[i] for i in range(size))) or 1.0
+    return max(0.0, min(1.0, dot / (na * nb)))
+
+
+def _local_rows_by_similarity(jd_text: str, candidate_data: dict | None) -> list[dict]:
+    query = _hash_embedding(jd_text)
+    if query is None:
+        return []
+    rows: list[dict] = []
+    for row in _local_profile_rows(candidate_data):
+        vector = _hash_embedding(str(row.get("text") or ""))
+        if vector is None:
+            continue
+        rows.append({**row, "_score": _cosine(query, vector)})
+    return sorted(rows, key=lambda item: item.get("_score", 0), reverse=True)
+
+
+def _matches(rows: list[dict], kind: str, limit: int, fallback: str) -> list[tuple[str, float]]:
+    out = [
+        (_row_label(row, fallback), _row_similarity(row))
+        for row in rows
+        if row.get("kind") == kind and _row_similarity(row) > 0.01
+    ]
+    return out[:limit]
+
+
+def _semantic_result(
+    *,
+    skill_matches: list[tuple[str, float]],
+    project_matches: list[tuple[str, float]],
+    experience_matches: list[tuple[str, float]],
+    credential_matches: list[tuple[str, float]],
+    profile_matches: list[tuple[str, float]],
+    source: str,
+) -> Optional[dict]:
+    groups = [
+        ("skills", skill_matches, 0.22),
+        ("projects", project_matches, 0.34),
+        ("experiences", experience_matches, 0.26),
+        ("credentials", credential_matches, 0.10),
+        ("profile", profile_matches, 0.08),
+    ]
+    active = [(name, values, weight) for name, values, weight in groups if values]
+    if not active:
+        return None
+
+    weight_total = sum(weight for _name, _values, weight in active) or 1.0
+    avgs = {name: sum(score for _label, score in values) / len(values) for name, values, _weight in active}
+    maxes = {name: max(score for _label, score in values) for name, values, _weight in active}
+    avg_signal = sum(avgs[name] * weight for name, _values, weight in active) / weight_total
+    peak_signal = sum(maxes[name] * weight for name, _values, weight in active) / weight_total
+
+    combined = 0.60 * avg_signal + 0.40 * peak_signal
+    if source == "local-profile":
+        # The built-in hashing embedder is deliberately lightweight and yields
+        # lower cosine values than sentence-transformer vectors for short tech
+        # text, so calibrate it on a narrower band.
+        stretched = (combined - 0.06) / 0.30
+    else:
+        stretched = (combined - 0.15) / 0.55
+    score = max(0, min(100, int(round(stretched * 100))))
+
+    raw = {
+        **{f"{name}_avg": round(avgs.get(name, 0.0), 3) for name, _values, _weight in groups},
+        **{f"{name}_max": round(maxes.get(name, 0.0), 3) for name, _values, _weight in groups},
+        "combined": round(combined, 3),
+        "source": source,
+    }
+
+    return {
+        "score": score,
+        "skill_matches": skill_matches,
+        "project_matches": project_matches,
+        "experience_matches": experience_matches,
+        "credential_matches": credential_matches,
+        "profile_matches": profile_matches,
+        "raw": raw,
+        "source": source,
+    }
+
+
 def semantic_fit(
     jd_text: str,
     *,
@@ -195,87 +410,72 @@ def semantic_fit(
 ) -> Optional[dict]:
     """Compute a 0-100 semantic-fit score for a JD against the stored profile.
 
-    Returns ``None`` when embeddings or vector storage are unavailable so the
-    caller can transparently fall back to keyword scoring.
+    Prefers scoped LanceDB rows when available, then falls back to a local hashed
+    embedding over the current profile payload. Returns ``None`` only when there
+    is no usable profile evidence.
     """
+    scope = _profile_scope(candidate_data)
+    if scope is not None and not _scope_has_ids(scope) and not _local_profile_rows(candidate_data):
+        return None
+
     store = _vec_store()
     tables = _available_tables(store)
-    if "skills" not in tables and "projects" not in tables:
-        return None
+    vector_tables = {"skills", "projects", "experiences", "credentials"} & tables
+    if vector_tables:
+        query = _embed_jd(jd_text)
+        if query is not None:
+            skill_rows = _table_search(
+                "skills",
+                query,
+                top_skills,
+                allowed_ids=None if scope is None else scope["skills"],
+                store=store,
+                available_tables=tables,
+            )
+            project_rows = _table_search(
+                "projects",
+                query,
+                top_projects,
+                allowed_ids=None if scope is None else scope["projects"],
+                store=store,
+                available_tables=tables,
+            )
+            experience_rows = _table_search(
+                "experiences",
+                query,
+                3,
+                allowed_ids=None if scope is None else scope["experiences"],
+                store=store,
+                available_tables=tables,
+            )
+            credential_rows = _table_search(
+                "credentials",
+                query,
+                3,
+                allowed_ids=None if scope is None else scope["credentials"],
+                store=store,
+                available_tables=tables,
+            )
+            vector_result = _semantic_result(
+                skill_matches=[(_row_label(r, "skill"), _row_similarity(r)) for r in skill_rows],
+                project_matches=[(_row_label(r, "project"), _row_similarity(r)) for r in project_rows],
+                experience_matches=[(_row_label(r, "experience"), _row_similarity(r)) for r in experience_rows],
+                credential_matches=[(_row_label(r, "credential"), _row_similarity(r)) for r in credential_rows],
+                profile_matches=[],
+                source="vector-store",
+            )
+            if vector_result is not None:
+                return vector_result
 
-    scope = _profile_scope(candidate_data)
-    if scope is not None and not scope["skills"] and not scope["projects"]:
-        return None
-
-    query = _embed_jd(jd_text)
-    if query is None:
-        return None
-
-    skill_rows = _table_search(
-        "skills",
-        query,
-        top_skills,
-        allowed_ids=None if scope is None else scope["skills"],
-        store=store,
-        available_tables=tables,
+    local_rows = _local_rows_by_similarity(jd_text, candidate_data)
+    return _semantic_result(
+        skill_matches=_matches(local_rows, "skill", top_skills, "skill"),
+        project_matches=_matches(local_rows, "project", top_projects, "project"),
+        experience_matches=_matches(local_rows, "experience", 3, "experience"),
+        credential_matches=_matches(local_rows, "credential", 3, "credential"),
+        profile_matches=_matches(local_rows, "profile", 1, "profile"),
+        source="local-profile",
     )
-    project_rows = _table_search(
-        "projects",
-        query,
-        top_projects,
-        allowed_ids=None if scope is None else scope["projects"],
-        store=store,
-        available_tables=tables,
-    )
-    if not skill_rows and not project_rows:
-        return None
-
-    skill_matches = [(_row_label(r, "skill"), _row_similarity(r)) for r in skill_rows]
-    project_matches = [(_row_label(r, "project"), _row_similarity(r)) for r in project_rows]
-
-    skill_sims = [s for _, s in skill_matches]
-    project_sims = [s for _, s in project_matches]
-
-    def _avg(xs: list[float]) -> float:
-        return sum(xs) / len(xs) if xs else 0.0
-
-    skill_avg = _avg(skill_sims)
-    project_avg = _avg(project_sims)
-    skill_max = max(skill_sims) if skill_sims else 0.0
-    project_max = max(project_sims) if project_sims else 0.0
-
-    # Projects encode much richer context than a single skill name, so weight
-    # them more heavily when both signals exist.
-    if skill_sims and project_sims:
-        avg_signal = 0.40 * skill_avg + 0.60 * project_avg
-        peak_signal = 0.40 * skill_max + 0.60 * project_max
-    elif project_sims:
-        avg_signal, peak_signal = project_avg, project_max
-    else:
-        avg_signal, peak_signal = skill_avg, skill_max
-
-    # Blend mean (coverage) and max (best-match peak) so a single very strong
-    # project lifts the score, but breadth still matters.
-    combined = 0.60 * avg_signal + 0.40 * peak_signal
-
-    # Sentence-transformers cosine sims for short tech text typically live in
-    # roughly [0.15, 0.70]. Stretch that band into a usable 0-100 spread so the
-    # criterion isn't permanently compressed in the 20-70 range.
-    stretched = (combined - 0.15) / 0.55
-    score = max(0, min(100, int(round(stretched * 100))))
-
-    return {
-        "score": score,
-        "skill_matches": skill_matches[:top_skills],
-        "project_matches": project_matches[:top_projects],
-        "raw": {
-            "skill_avg": round(skill_avg, 3),
-            "project_avg": round(project_avg, 3),
-            "skill_max": round(skill_max, 3),
-            "project_max": round(project_max, 3),
-            "combined": round(combined, 3),
-        },
-    }
 
 
 class SemanticMatcher:

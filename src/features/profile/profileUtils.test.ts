@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeProfileResponse, profileDeletePath } from "./profileUtils";
+import { entryTitle, normalizeProfileResponse, profileDeleteKey, profileDeletePath } from "./profileUtils";
 
 describe("normalizeProfileResponse", () => {
   it("normalizes partial profile payloads instead of rejecting them", () => {
@@ -24,5 +24,14 @@ describe("normalizeProfileResponse", () => {
 describe("profileDeletePath", () => {
   it("encodes text profile entries so slashes and spaces survive routing", () => {
     expect(profileDeletePath("education", "B.Tech / MBA")).toBe("/api/v1/profile/education/B.Tech%20%2F%20MBA");
+  });
+});
+
+describe("profile delete labels", () => {
+  it("uses stable ids when available and human labels as fallback", () => {
+    expect(entryTitle({ role: "Engineer", co: "Acme" })).toBe("Engineer at Acme");
+    expect(profileDeleteKey({ id: "proj-1", title: "Hiring Agent" })).toBe("proj-1");
+    expect(profileDeleteKey({ title: "B.Tech / MBA" })).toBe("B.Tech / MBA");
+    expect(profileDeleteKey({ n: "FastAPI" })).toBe("FastAPI");
   });
 });

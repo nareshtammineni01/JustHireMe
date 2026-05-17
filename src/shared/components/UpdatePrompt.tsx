@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 
-type UpdateState = "checking" | "available" | "downloading" | "installing" | "ready" | "error";
+type UpdateState = "checking" | "available" | "downloading" | "installing" | "relaunching" | "ready" | "error";
 type UpdateInstallStatus = {
   platform: string;
   canUpdate: boolean;
@@ -95,13 +95,15 @@ export function UpdatePrompt() {
   const etaSeconds = total && bytesPerSecond > 0 ? Math.max(0, (total - downloaded) / bytesPerSecond) : null;
   const blockedByInstallLocation = Boolean(installStatus && !installStatus.canUpdate && state !== "ready");
   const updateMessage = (() => {
-    if (state === "ready") return "The update is installed. Restart to finish.";
+    if (state === "ready") return "The update is installed. Restart to finish if JustHireMe did not reopen automatically.";
+    if (state === "relaunching") return "Update installed. Reopening JustHireMe with the new version.";
     if (blockedByInstallLocation) return installStatus?.reason || "Move JustHireMe to a writable Applications folder before updating.";
-    if (state === "installing") return "Download complete. Applying the signed update; this can take a few minutes.";
+    if (state === "installing") return "Download complete. Applying the signed update in the background.";
     if (state === "downloading") return "Downloading the signed update. You can keep using JustHireMe while this runs.";
-    return `You are running ${update?.currentVersion}. Install the latest signed build now.`;
+    return `You are running ${update?.currentVersion}. Update to ${update?.version} now.`;
   })();
   const progressLabel = (() => {
+    if (state === "relaunching") return "Reopening the app with the updated build.";
     if (state === "installing") return `Applying update, elapsed ${formatDuration(elapsedSeconds)}.`;
     if (progress !== null && total) {
       const eta = etaSeconds !== null ? `, about ${formatDuration(etaSeconds)} left` : "";
@@ -119,6 +121,16 @@ export function UpdatePrompt() {
     setUpdate(null);
   };
 
+  const relaunchIntoUpdate = async () => {
+    try {
+      localStorage.removeItem(PENDING_RESTART_KEY);
+      await relaunch();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setState("ready");
+    }
+  };
+
   const install = async () => {
     if (installStatus && !installStatus.canUpdate) {
       setError(`${installStatus.reason} Download the latest DMG from ${RELEASES_URL} if you need to repair this install now.`);
@@ -132,7 +144,7 @@ export function UpdatePrompt() {
     setStartedAt(Date.now());
     setNow(Date.now());
     try {
-      await update.downloadAndInstall((event: DownloadEvent) => {
+      await update.download((event: DownloadEvent) => {
         if (event.event === "Started") {
           setTotal(event.data.contentLength ?? null);
           setDownloaded(0);
@@ -142,14 +154,21 @@ export function UpdatePrompt() {
           setState("installing");
         }
       });
+      setState("installing");
+      await update.install();
       localStorage.setItem(PENDING_RESTART_KEY, update.version);
       setPendingRestartVersion(update.version);
-      setState("ready");
+      setState("relaunching");
+      window.setTimeout(() => {
+        void relaunchIntoUpdate();
+      }, 650);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setState("error");
     }
   };
+
+  const isBusy = state === "downloading" || state === "installing" || state === "relaunching";
 
   return (
     <aside className="update-toast" role="status" aria-live="polite">
@@ -157,8 +176,8 @@ export function UpdatePrompt() {
         <div className="eyebrow">Update available</div>
         <strong>JustHireMe {update.version}</strong>
         <p>{updateMessage}</p>
-        {(state === "downloading" || state === "installing") && (
-          <div className={`update-progress ${progress === null || state === "installing" ? "is-indeterminate" : ""}`}>
+        {isBusy && (
+          <div className={`update-progress ${progress === null || state !== "downloading" ? "is-indeterminate" : ""}`}>
             <div style={progress !== null && state === "downloading" ? { width: `${progress}%` } : undefined} />
             <span>{progressLabel}</span>
           </div>
@@ -170,18 +189,17 @@ export function UpdatePrompt() {
           <button
             className="btn btn-accent"
             onClick={() => {
-              localStorage.removeItem(PENDING_RESTART_KEY);
-              relaunch();
+              void relaunchIntoUpdate();
             }}
           >
             Restart
           </button>
         ) : (
-          <button className="btn btn-accent" onClick={install} disabled={blockedByInstallLocation || state === "downloading" || state === "installing"}>
-            {blockedByInstallLocation ? "Move app first" : state === "downloading" ? "Downloading..." : state === "installing" ? "Installing..." : "Update"}
+          <button className="btn btn-accent" onClick={install} disabled={blockedByInstallLocation || isBusy}>
+            {blockedByInstallLocation ? "Move app first" : state === "downloading" ? "Downloading..." : state === "installing" ? "Applying..." : state === "relaunching" ? "Reopening..." : "Update"}
           </button>
         )}
-        <button className="btn btn-ghost" onClick={dismiss} disabled={state === "downloading" || state === "installing"}>Later</button>
+        <button className="btn btn-ghost" onClick={dismiss} disabled={isBusy}>Later</button>
       </div>
     </aside>
   );
